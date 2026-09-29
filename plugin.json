@@ -1,20 +1,45 @@
 {
-  "Id": "{{.Id}}",
-  "TriggerKeywords": [
-    "{{.TriggerKeyword}}"
-  ],
-  "Name": "{{.Name}}",
-  "Description": "{{.Description}}",
-  "Author": "{{.Author}}",
-  "Version": "0.0.6",
-  "MinWoxVersion": "2.0.0",
+  "Id": "c3a91e47-8d2b-4f65-a1c0-6e9b4d7f2a18",
+  "TriggerKeywords": ["*", "game"],
+  "Name": "i18n:plugin_name",
+  "Description": "i18n:plugin_description",
+  "Author": "Wox-Launcher",
+  "Version": "1.1.0",
+  "MinWoxVersion": "2.4.2",
   "Runtime": "nodejs",
-  "Website": "{{.Website}}",
+  "Website": "https://github.com/Wox-launcher/Wox.Plugin.Games",
   "Entry": "index.js",
   "Icon": "relative:images/app.svg",
-  "SupportedOS": [
-    "windows",
-    "linux",
-    "darwin"
-  ]
+  "SupportedOS": ["windows", "linux", "darwin"],
+  "Features": [{ "Name": "mru", "Params": { "HashBy": "scoreKey" } }],
+  "I18n": {
+    "en_US": {
+      "plugin_name": "Games",
+      "plugin_description": "Search installed games from Steam, Epic, GOG, Ubisoft Connect, EA, Battle.net, Xbox, and itch.io.",
+      "action_launch": "Launch",
+      "action_open_folder": "Open Install Folder",
+      "action_open_store": "Open Store Page",
+      "action_copy_name": "Copy Name",
+      "action_favorite": "Add to Favorites",
+      "action_unfavorite": "Remove from Favorites",
+      "error_launch_failed": "Unable to launch the game. See the Wox log for details.",
+      "group_favorites": "Favorites",
+      "tool_list_installed_games": "List installed games. An optional query filters by name.",
+      "tool_launch_game": "Launch an installed game by its id, such as steam:570 or epic:AppName."
+    },
+    "zh_CN": {
+      "plugin_name": "游戏",
+      "plugin_description": "搜索 Steam、Epic、GOG、Ubisoft Connect、EA、Battle.net、Xbox 和 itch.io 里已安装的游戏。",
+      "action_launch": "启动",
+      "action_open_folder": "打开安装目录",
+      "action_open_store": "打开商店页",
+      "action_copy_name": "复制名称",
+      "action_favorite": "加入收藏",
+      "action_unfavorite": "取消收藏",
+      "error_launch_failed": "游戏启动失败，请查看 Wox 日志了解详情。",
+      "group_favorites": "收藏",
+      "tool_list_installed_games": "列出已安装的游戏。可以按名字过滤。",
+      "tool_launch_game": "按游戏编号启动已安装的游戏，例如 steam:570 或 epic:AppName。"
+    }
+  }
 }

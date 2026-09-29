@@ -1,11 +1,11 @@
-> For developer
+# Wox.Plugin.Games
 
-    Please run `make init` to initialize the project.
+Search installed games from Steam, Epic, GOG, Ubisoft Connect, EA, Battle.net, Xbox, and itch.io.
 
-# {{.Name}}
+![](preview.png)
 
 # Install
 
 ```
-wpm install {{.Name}}
+wpm install Games
 ```

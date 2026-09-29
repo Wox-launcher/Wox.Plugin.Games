@@ -1,0 +1,137 @@
+import path from "path"
+import { battleNetGamesFromAggregate, battleNetGamesFromReg } from "../launchers/battlenet"
+import { eaGameFromInstallerXml, eaGamesFromReg } from "../launchers/ea"
+import { epicGameFromManifest } from "../launchers/epic"
+import { gogGamesFromReg } from "../launchers/gog"
+import { itchExecutable } from "../launchers/itch"
+import { gameFromManifest, iconFromUrlShortcut, isRuntimeName, libraryPaths, parseVdf } from "../launchers/steam"
+import { ubisoftGamesFromReg } from "../launchers/ubisoft"
+import { xboxGameFromConfig } from "../launchers/xbox"
+import { matchGames, scoreName } from "../match"
+import { displayIconPath, parseRegSz, parseRegTree } from "../registry"
+import { decodeXmlText } from "../xml"
+import { createGame, parseFavorites } from "../game"
+import { InstalledGame } from "../types"
+
+function mustGame(source: string, name: string, appid = "1"): InstalledGame {
+  const game = createGame(source, { appid, name, launchUrl: `${source}://${appid}`, installDir: `C:\\Games\\${name}` })
+  if (!game) throw new Error(`invalid ${name}`)
+  return game
+}
+
+test("parseVdf reads library folders and skips comments", () => {
+  const root = parseVdf(`
+    // ignored
+    "libraryfolders"
+    {
+      "0" { "path" "C:\\\\Steam" }
+      "1" "D:\\\\Games"
+    }
+  `)
+  expect(libraryPaths(root)).toEqual(["C:\\Steam", "D:\\Games"])
+})
+
+test("gameFromManifest keeps fully installed games and drops runtimes", () => {
+  const installed = gameFromManifest(parseVdf(`"AppState" { "appid" "570" "name" "Dota 2" "installdir" "dota 2 beta" "StateFlags" "4" }`), "C:\\Steam", "C:\\Steam")
+  expect(installed?.id).toBe("steam:570")
+  expect(installed?.installDir).toBe(path.join("C:\\Steam", "steamapps", "common", "dota 2 beta"))
+  expect(installed?.launchUrl).toBe("steam://rungameid/570")
+  expect(gameFromManifest(parseVdf(`"AppState" { "appid" "1" "name" "Pending" "StateFlags" "2" }`), "C:\\Steam", "C:\\Steam")).toBeNull()
+  expect(isRuntimeName("Proton 9.0")).toBe(true)
+  expect(gameFromManifest(parseVdf(`"AppState" { "appid" "9" "name" "Proton 9.0" "StateFlags" "4" }`), "C:\\Steam", "C:\\Steam")).toBeNull()
+})
+
+test("iconFromUrlShortcut reads a Steam desktop shortcut", () => {
+  expect(iconFromUrlShortcut(`[InternetShortcut]\r\nURL=steam://rungameid/570\r\nIconFile="C:\\Icons\\dota.ico"\r\n`)).toEqual({
+    appid: "570",
+    iconPath: "C:\\Icons\\dota.ico"
+  })
+})
+
+test("matchGames ranks names and hides an empty global query", () => {
+  const games = [mustGame("steam", "Dota 2", "570"), mustGame("epic", "Control", "Control"), mustGame("gog", "Hades", "1207659013")]
+  expect(matchGames(games, "", { global: true })).toEqual([])
+  expect(matchGames(games, "").map(item => item.game.name)).toEqual(["Control", "Dota 2", "Hades"])
+  expect(scoreName("Dota 2", "dota")).toBe(800)
+  expect(matchGames(games, "dt", { global: true }).map(item => item.game.name)).toEqual(["Dota 2"])
+  expect(matchGames(games, "z")).toEqual([])
+})
+
+test("epic manifest requires a complete game identity", () => {
+  const game = epicGameFromManifest({
+    DisplayName: "Fortnite",
+    AppName: "Fortnite",
+    CatalogNamespace: "fn",
+    CatalogItemId: "catalog",
+    InstallLocation: "D:\\Fortnite",
+    LaunchExecutable: "Fortnite.exe",
+    AppCategories: ["games"]
+  })
+  expect(game?.id).toBe("epic:Fortnite")
+  expect(game?.launchUrl).toContain("fn%3Acatalog%3AFortnite")
+  expect(game?.iconPath).toBe(path.join("D:\\Fortnite", "Fortnite.exe"))
+  expect(epicGameFromManifest({ DisplayName: "Tool", AppName: "Tool", CatalogNamespace: "ns", CatalogItemId: "id", AppCategories: ["apps"] })).toBeNull()
+})
+
+test("gog and ubisoft registry rows become games", () => {
+  const gog = gogGamesFromReg([
+    { key: "HKEY_LOCAL_MACHINE\\SOFTWARE\\GOG.com\\Games\\1207659013", values: { gameName: "Hades", path: "D:\\Hades", exe: "Hades.exe" } },
+    { key: "HKEY_LOCAL_MACHINE\\SOFTWARE\\GOG.com\\Games\\999", values: { gameName: "Soundtrack", path: "D:\\Hades", dependsOn: "1207659013" } }
+  ])
+  expect(gog.map(game => game.name)).toEqual(["Hades"])
+  expect(gog[0].launchUrl).toBe(path.join("D:\\Hades", "Hades.exe"))
+
+  const ubisoft = ubisoftGamesFromReg([{ key: "HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Launcher\\Installs\\123", values: { InstallDir: "D:\\Games\\Anno\\" } }])
+  expect(ubisoft[0]).toMatchObject({ id: "ubisoft:123", name: "Anno", launchUrl: "uplay://launch/123" })
+})
+
+test("ea installer xml decodes entities and keeps content ids", () => {
+  const xml = "<gameTitle>Dragon Age&#8482;</gameTitle><contentID>ofb1</contentID><contentID>ofb1</contentID><filePath>[INSTALLDIR]\\Game.exe</filePath>"
+  const game = eaGameFromInstallerXml(xml, "D:\\Dragon Age")
+  expect(decodeXmlText("Dragon Age&#8482;")).toBe("Dragon Age™")
+  expect(game?.name).toBe("Dragon Age™")
+  expect(game?.offerIds).toEqual(["ofb1"])
+  expect(game?.launchUrl).toBe("origin2://game/launch?offerIds=ofb1")
+  expect(game?.iconPath).toBe(path.join("D:\\Dragon Age", "Game.exe"))
+  const fromReg = eaGamesFromReg([{ key: "HKEY_LOCAL_MACHINE\\SOFTWARE\\Origin Games\\123", values: { DisplayName: "Origin Game", "Install Dir": "D:\\Origin Game" } }])
+  expect(fromReg[0].launchUrl).toBe("origin2://game/launch?offerIds=123")
+})
+
+test("battle.net maps install ids onto client launch codes", () => {
+  const games = battleNetGamesFromAggregate(
+    { installed: [{ name: "Hearthstone", product_id: "hsb", launch_uri: "battlenet://hsb", icon_path: "C:/Games/Hearthstone/Hearthstone.exe" }] },
+    "C:\\Battle.net\\Battle.net.exe"
+  )
+  expect(games[0].launchArgs).toEqual(["--exec=launch WTCG"])
+  expect(games[0].launchUrl).toBe("C:\\Battle.net\\Battle.net.exe")
+  const fromReg = battleNetGamesFromReg(
+    [
+      {
+        key: "HKEY_LOCAL_MACHINE\\SOFTWARE\\Uninstall\\hsb",
+        values: { DisplayName: "Hearthstone", UninstallString: "--uid=hsb", InstallLocation: "C:\\Hearthstone", DisplayIcon: '"C:\\Hearthstone\\Hearthstone.exe",0' }
+      }
+    ],
+    ""
+  )
+  expect(fromReg[0].iconPath).toBe("C:\\Hearthstone\\Hearthstone.exe")
+  expect(displayIconPath('"C:\\Hearthstone\\Hearthstone.exe",0')).toBe("C:\\Hearthstone\\Hearthstone.exe")
+})
+
+test("xbox config prefers the registered shell app", () => {
+  const xml = `<Identity Name="Microsoft.Game" /><ShellVisuals DefaultDisplayName="Halo" /><Executable Name="game.exe" Id="App" />`
+  const game = xboxGameFromConfig(xml, "D:\\Halo", [{ appid: "Microsoft.Game_abc!App", installDir: "D:\\Halo" }])
+  expect(game?.launchUrl).toBe("shell:AppsFolder\\Microsoft.Game_abc!App")
+  expect(game?.name).toBe("Halo")
+})
+
+test("itch executable comes from the first action path", () => {
+  expect(itchExecutable('[[actions]]\nname = "play"\npath = "Game.exe"\n')).toBe("Game.exe")
+})
+
+test("registry text and favorites parse loosely", () => {
+  expect(parseRegSz("    SteamPath    REG_SZ    C:\\Steam\r\n", "SteamPath")).toBe("C:\\Steam")
+  const tree = parseRegTree("HKEY_LOCAL_MACHINE\\SOFTWARE\\Example\\1\r\n    gameName    REG_SZ    Hades\r\n\r\nnot a key\r\n")
+  expect(tree).toEqual([{ key: "HKEY_LOCAL_MACHINE\\SOFTWARE\\Example\\1", values: { gameName: "Hades" } }])
+  expect(parseFavorites('["steam:570", ""]')).toEqual(["steam:570"])
+  expect(parseFavorites("nope")).toEqual([])
+})
