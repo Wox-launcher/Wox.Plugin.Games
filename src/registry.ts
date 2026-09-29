@@ -11,8 +11,9 @@ export interface RegEntry {
 export function parseRegSz(output: string, valueName: string): string {
   const wanted = String(valueName || "").toLowerCase()
   for (const line of String(output || "").split(/\r?\n/)) {
-    const match = /^\s*(\S+)\s+REG_\w+\s+(.*)$/.exec(line)
-    if (match && match[1].toLowerCase() === wanted) return match[2].trim()
+    // Value names such as "Install Dir" contain spaces, so the name runs up to the REG_* column.
+    const match = /^\s*(.+?)\s+REG_\w+\s+(.*)$/.exec(line)
+    if (match && match[1].trim().toLowerCase() === wanted) return match[2].trim()
   }
   return ""
 }

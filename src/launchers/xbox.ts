@@ -6,6 +6,57 @@ import { parseRegTree } from "../registry"
 import { xmlAttribute, xmlTag } from "../xml"
 import { emptyScan, GameLauncher, InstalledGame, ScanDeps, ScanReport, WindowsApp } from "../types"
 
+/** Same order the Apps plugin uses when it resolves a packaged app's Square44x44Logo. */
+const LOGO_SCALES = ["scale-200", "scale-400", "scale-150", "scale-125", "scale-100", ""]
+const LOGO_TARGET_SIZES = ["256", "64", "48", "44", "32", "24", "16"]
+
+function logoVariants(logo: string): string[] {
+  const normalized = logo.replace(/\//g, "\\")
+  const parsed = path.win32.parse(normalized)
+  const named = (fileName: string) => (parsed.dir ? path.win32.join(parsed.dir, fileName) : fileName)
+  const variants: string[] = []
+  for (const size of LOGO_TARGET_SIZES) {
+    for (const scale of LOGO_SCALES) {
+      variants.push(named(scale ? `${parsed.name}.targetsize-${size}.${scale}${parsed.ext}` : `${parsed.name}.targetsize-${size}${parsed.ext}`))
+    }
+  }
+  for (const scale of LOGO_SCALES) variants.push(scale ? named(`${parsed.name}.${scale}${parsed.ext}`) : normalized)
+  return variants
+}
+
+/** Shell logo files declared by MicrosoftGame.config, largest app-list size first. */
+export function xboxIconCandidates(xml: string, installDir: string): string[] {
+  const visuals = xmlTag(xml, "ShellVisuals")
+  const executable = xmlTag(xml, "Executable")
+  const logos = [
+    xmlAttribute(executable, "OverrideSquare44x44Logo"),
+    xmlAttribute(visuals, "Square44x44Logo"),
+    xmlAttribute(executable, "OverrideLogo"),
+    xmlAttribute(visuals, "Square150x150Logo"),
+    xmlAttribute(visuals, "StoreLogo")
+  ]
+  const seen = new Set<string>()
+  const files: string[] = []
+  for (const logo of logos) {
+    if (!logo) continue
+    for (const variant of logoVariants(logo)) {
+      const full = path.win32.isAbsolute(variant) ? variant : path.win32.join(installDir, variant)
+      const key = full.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      files.push(full)
+    }
+  }
+  return files
+}
+
+async function firstExisting(deps: ScanDeps, files: string[]): Promise<string> {
+  for (const file of files) {
+    if (await deps.exists(file)) return file
+  }
+  return ""
+}
+
 /** Match the manifest's application ID to a registered Shell entry before falling back to a raw exe. */
 export function xboxGameFromConfig(xml: string, installDir: string, apps: WindowsApp[] = [], report?: ScanReport): InstalledGame | null {
   const name = xmlAttribute(xmlTag(xml, "ShellVisuals"), "DefaultDisplayName")
@@ -82,14 +133,19 @@ export class XboxLauncher implements GameLauncher {
       const config = path.join(folder, "MicrosoftGame.config")
       try {
         if (!(await deps.exists(config))) continue
-        const game = xboxGameFromConfig(await deps.readFile(config), folder, inventory.apps, deps.report)
+        const xml = await deps.readFile(config)
+        const game = xboxGameFromConfig(xml, folder, inventory.apps, deps.report)
         if (!game) continue
         if (seen.has(game.id)) {
           void deps.report?.("candidate_skipped", { config, id: game.id, reason: "duplicate_game_id" })
           continue
         }
         game.discoveryPath = config
-        if (game.iconPath && !(await deps.exists(game.iconPath))) {
+        const logo = await firstExisting(deps, xboxIconCandidates(xml, folder))
+        if (logo) {
+          game.iconPath = logo
+          game.iconType = "absolute"
+        } else if (game.iconPath && !(await deps.exists(game.iconPath))) {
           game.iconPath = ""
           game.iconType = ""
         }

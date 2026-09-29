@@ -16,9 +16,24 @@ export interface OpenExternalOptions {
   platform?: NodeJS.Platform
   isLaunch?: boolean
   cwd?: string
+  /** Ask WMI to create the process. A direct child of this plugin cannot leave Wox's job, and EA then fails to create the game. */
+  escapeJob?: boolean
   spawn?: typeof spawn
   regQueryTree?: typeof regQueryTree
   report?: ScanReport
+}
+
+/** Command line WMI should create. Pieces that contain spaces are quoted inside PowerShell, so this script has no raw double quotes for cmd to split. */
+export function wmiCreateScript(executable: string, args: string[]): string {
+  const parts = [executable, ...args].map(part => `'${part.replace(/'/g, "''")}'`)
+  return [
+    `$parts = @(${parts.join(", ")})`,
+    "$q = [char]34",
+    "$line = ($parts | ForEach-Object { if ($_ -match '\\s') { $q + $_ + $q } else { $_ } }) -join ' '",
+    "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $line }",
+    "if ($r.ReturnValue -ne 0) { Write-Error -Message $r.ReturnValue; exit 1 }",
+    "exit 0"
+  ].join("; ")
 }
 
 /**
@@ -49,18 +64,41 @@ async function dispatch(value: string, argv: string[], options: OpenExternalOpti
   let pipeStderr = false
   if (platform === "win32") {
     let direct = false
+    let folder = false
     if (path.win32.isAbsolute(value)) {
       const stat = await fs.promises.stat(value)
-      if (options.isLaunch && stat.isDirectory()) {
-        const err = new Error("A game installation directory is not a launch command") as NodeJS.ErrnoException
-        err.code = "EISDIR"
-        err.path = value
-        throw err
+      if (stat.isDirectory()) {
+        if (options.isLaunch) {
+          const err = new Error("A game installation directory is not a launch command") as NodeJS.ErrnoException
+          err.code = "EISDIR"
+          err.path = value
+          throw err
+        }
+        folder = true
+      } else {
+        direct = stat.isFile() && /\.(exe|com)$/i.test(value)
+        if (direct) cwd = options.cwd || path.win32.dirname(value)
       }
-      direct = stat.isFile() && /\.(exe|com)$/i.test(value)
-      if (direct) cwd = options.cwd || path.win32.dirname(value)
     }
-    if (/^shell:AppsFolder\\/i.test(value)) {
+    if (direct && options.escapeJob) {
+      // Node's detached child stays in the plugin job. That job rejects CREATE_BREAKAWAY_FROM_JOB,
+      // which is the access-denied failure EA logs when it creates the game. WMI creates the process outside that job.
+      const shell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe")
+      const powershell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+      return startProcess(shell, ["/c", powershell, "-NoProfile", "-NonInteractive", "-Command", wmiCreateScript(value, argv)], {
+        method: "wmi",
+        waitForExit: true,
+        pipeStderr: true,
+        spawnImpl: options.spawn,
+        report: options.report
+      })
+    } else if (folder) {
+      // start on the directory returns 0 without a window for names like "历史模拟器：崇祯" (U+FF1A) under "Program Files (x86)".
+      // WindowsApps also denies start on the package directory. start explorer.exe opens both, while a direct explorer.exe spawn stays hidden.
+      const shell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe")
+      const explorer = path.join(process.env.SystemRoot || "C:\\Windows", "explorer.exe")
+      return startProcess(shell, ["/c", "start", "", explorer, cmdStartToken(value)], { method: "folder", waitForExit: true, spawnImpl: options.spawn, report: options.report })
+    } else if (/^shell:AppsFolder\\/i.test(value)) {
       command = path.join(process.env.SystemRoot || "C:\\Windows", "explorer.exe")
       commandArgs = [value]
       method = "registered_app"

@@ -22,7 +22,9 @@
       "action_copy_name": "Copy Name",
       "action_favorite": "Add to Favorites",
       "action_unfavorite": "Remove from Favorites",
+      "action_rescan": "Rescan Games",
       "error_launch_failed": "Unable to launch the game. See the Wox log for details.",
+      "rescan_finished": "Scan finished. {count} games indexed.",
       "group_favorites": "Favorites",
       "tool_list_installed_games": "List installed games. An optional query filters by name.",
       "tool_launch_game": "Launch an installed game by its id, such as steam:570 or epic:AppName."
@@ -36,7 +38,9 @@
       "action_copy_name": "复制名称",
       "action_favorite": "加入收藏",
       "action_unfavorite": "取消收藏",
+      "action_rescan": "重新扫描",
       "error_launch_failed": "游戏启动失败，请查看 Wox 日志了解详情。",
+      "rescan_finished": "扫描完成，已索引 {count} 款游戏。",
       "group_favorites": "收藏",
       "tool_list_installed_games": "列出已安装的游戏。可以按名字过滤。",
       "tool_launch_game": "按游戏编号启动已安装的游戏，例如 steam:570 或 epic:AppName。"

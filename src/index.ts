@@ -9,6 +9,7 @@ import { isGameRecord, normalizeGame, parseFavorites } from "./game"
 import { openExternal, OpenExternalOptions } from "./launch"
 import { createLaunchers } from "./launchers"
 import { launchBattleNetGame, parseBattleNetLaunchCode, readBattleNetClient } from "./launchers/battlenet"
+import { eaLauncherExecutable, launchEaGame, readEaClient } from "./launchers/ea"
 import { matchGames } from "./match"
 import { dedupePaths } from "./paths"
 import { buildResult, ResultHooks } from "./results"
@@ -195,7 +196,22 @@ export class GamesPlugin implements Plugin {
         }
       },
       isFavorite: id => this.favorites.includes(id),
-      favorite: async (ctx, id) => this.toggleFavorite(ctx, id)
+      favorite: async (ctx, id) => this.toggleFavorite(ctx, id),
+      rescan: async ctx => this.rescan(ctx)
+    }
+  }
+
+  /** Manual scan for a library that appeared after the last timed refresh. */
+  async rescan(ctx: Context): Promise<void> {
+    await this.log(ctx, "Info", "rescan_requested")
+    await this.refresh()
+    if (this.api && typeof this.api.RefreshQuery === "function") {
+      await this.api.RefreshQuery(ctx, { PreserveSelectedIndex: true })
+    }
+    await this.log(ctx, "Info", "rescan_finished", { games: this.games.length, scanId: this.scanId })
+    if (this.api?.Notify) {
+      const template = this.api.GetTranslation ? await this.api.GetTranslation(ctx, "rescan_finished") : "Scan finished. {count} games indexed."
+      await this.api.Notify(ctx, template.replace(/\{count\}/g, String(this.games.length)))
     }
   }
 
@@ -224,8 +240,16 @@ export class GamesPlugin implements Plugin {
       }
       try {
         const launchCode = game.source === "battlenet" ? parseBattleNetLaunchCode(game.launchArgs || []) : ""
-        const result =
-          launchCode && path.win32.isAbsolute(game.launchUrl)
+        const eaProtocol = game.source === "ea" && /^origin2:/i.test(game.launchUrl)
+        // origin2:// while no healthy EADesktop is registered makes EALaunchHelper start EADesktop.exe -updater_call.
+        // That process cannot create the game, and Play stays broken until the EA cache is cleared.
+        // The launcher executable itself must be created outside this plugin's job, or its EADesktop fails the same way.
+        const result = eaProtocol
+          ? await launchEaGame(game.launchUrl, eaLauncherExecutable(), {
+              open: (target, args) => this.openExternal(target, args, { isLaunch: true, report, escapeJob: path.win32.isAbsolute(target) }),
+              snapshot: async () => readEaClient()
+            })
+          : launchCode && path.win32.isAbsolute(game.launchUrl)
             ? await launchBattleNetGame(game.launchUrl, launchCode, {
                 open: (target, args) => this.openExternal(target, args, { isLaunch: true, report }),
                 snapshot: async () => readBattleNetClient()

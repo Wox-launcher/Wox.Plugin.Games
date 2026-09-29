@@ -1,6 +1,6 @@
 import { Context, ExecuteResultAction, Result } from "@wox-launcher/wox-plugin"
 import { favoritesGroupScore, launcherGroupScore, sourceLabel } from "./game"
-import { ACTION_COPY, ACTION_FOLDER, ACTION_LAUNCH, ACTION_OPEN, ACTION_STAR, ACTION_UNSTAR, FALLBACK_ICON, imageOf } from "./icons"
+import { ACTION_COPY, ACTION_FOLDER, ACTION_LAUNCH, ACTION_OPEN, ACTION_RESCAN, ACTION_STAR, ACTION_UNSTAR, FALLBACK_ICON, imageOf } from "./icons"
 import { InstalledGame } from "./types"
 
 export interface ResultHooks {
@@ -9,6 +9,7 @@ export interface ResultHooks {
   copy: (ctx: Context, text: string) => Promise<void>
   isFavorite: (id: string) => boolean
   favorite: (ctx: Context, id: string) => Promise<void>
+  rescan: (ctx: Context) => Promise<void>
 }
 
 export interface BuildResultOptions {
@@ -52,13 +53,23 @@ export function buildResult(game: InstalledGame, score: number, hooks: ResultHoo
       Action: async ctx => hooks.open(ctx, game.storeUrl)
     })
   }
-  actions.push({
-    Id: `copy-${game.appid}`,
-    Name: "i18n:action_copy_name",
-    Icon: ACTION_COPY,
-    ContextData: context,
-    Action: async ctx => hooks.copy(ctx, game.name)
-  })
+  actions.push(
+    {
+      Id: `copy-${game.appid}`,
+      Name: "i18n:action_copy_name",
+      Icon: ACTION_COPY,
+      ContextData: context,
+      Action: async ctx => hooks.copy(ctx, game.name)
+    },
+    {
+      Id: `rescan-${game.appid}`,
+      Name: "i18n:action_rescan",
+      Icon: ACTION_RESCAN,
+      PreventHideAfterAction: true,
+      ContextData: context,
+      Action: async ctx => hooks.rescan(ctx)
+    }
+  )
   const favorite = hooks.isFavorite(game.id)
   actions.splice(1, 0, {
     Id: `favorite-${game.appid}`,

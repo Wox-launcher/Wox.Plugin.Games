@@ -3,7 +3,7 @@ import { EventEmitter } from "events"
 import os from "os"
 import { ActionContext, Context, PublicAPI, Query, SetSettingOption, WoxImage } from "@wox-launcher/wox-plugin"
 import { GamesPlugin } from "../index"
-import { openExternal } from "../launch"
+import { openExternal, wmiCreateScript } from "../launch"
 import { createGame } from "../game"
 import { InstalledGame, ScanDeps } from "../types"
 
@@ -53,7 +53,14 @@ test("keyword search groups launchers and an empty global search stays quiet", a
   expect(favorite.ScoreKey).toBe("steam:570")
   expect(favorite.GroupScore || 0).toBeGreaterThan(grouped.Results[0].GroupScore || 0)
   expect(grouped.Results[0].SubTitle).toBe("")
-  expect(favorite.Actions?.map(action => action.Name)).toEqual(["i18n:action_launch", "i18n:action_unfavorite", "i18n:action_open_folder", "i18n:action_open_store", "i18n:action_copy_name"])
+  expect(favorite.Actions?.map(action => action.Name)).toEqual([
+    "i18n:action_launch",
+    "i18n:action_unfavorite",
+    "i18n:action_open_folder",
+    "i18n:action_open_store",
+    "i18n:action_copy_name",
+    "i18n:action_rescan"
+  ])
 
   const global = await plugin.query(ctx, query("", true))
   expect(global.Results).toEqual([])
@@ -128,9 +135,116 @@ test("favorite action saves the newest id first and asks Wox to refresh", async 
   expect(plugin.restoreResult({ id: "missing" })).toBeNull()
 })
 
+test("rescan action scans again and asks Wox to refresh the query", async () => {
+  let scans = 0
+  let refreshed = 0
+  const notices: string[] = []
+  const dota = game("steam", "Dota 2", "570")
+  const plugin = new GamesPlugin({
+    games: [dota],
+    deps: quietDeps(),
+    launchers: [
+      {
+        id: "steam",
+        label: "Steam",
+        scan: async () => {
+          scans += 1
+          return { games: [dota], watchDirs: [] }
+        }
+      }
+    ]
+  })
+  await plugin.init(ctx, {
+    PluginDirectory: "",
+    API: {
+      Log: async () => undefined,
+      GetCacheFolder: async () => "",
+      GetSetting: async () => "[]",
+      OnSettingChanged: async () => undefined,
+      OnMRURestore: async () => undefined,
+      OnUnload: async () => undefined,
+      RegisterPluginTool: async () => ({}),
+      RefreshQuery: async () => {
+        refreshed += 1
+      },
+      GetTranslation: async () => "Scan finished. {count} games indexed.",
+      Notify: async (_ctx: Context, message: string) => {
+        notices.push(message)
+      }
+    } as unknown as PublicAPI
+  })
+  await plugin.refresh()
+  plugin.stop()
+  const scanned = scans
+  const listed = await plugin.query(ctx, query("", false))
+  const rescan = listed.Results[0].Actions?.find(action => action.Name === "i18n:action_rescan")
+  if (!rescan || !("Action" in rescan)) throw new Error("missing rescan action")
+  expect(rescan.PreventHideAfterAction).toBe(true)
+  await rescan.Action(ctx, actionContext)
+  expect(scans).toBe(scanned + 1)
+  expect(refreshed).toBe(1)
+  expect(notices).toEqual(["Scan finished. 1 games indexed."])
+})
+
 test("launch rejects an empty target and an installation directory", async () => {
   await expect(openExternal("", [])).rejects.toThrow(/empty/)
   await expect(openExternal(os.tmpdir(), [], { isLaunch: true, platform: "win32" })).rejects.toThrow(/directory/)
+})
+
+test("windows folder open goes through explorer launched by cmd start", async () => {
+  const folder = os.tmpdir()
+  const calls: Array<{ command: string; args: readonly string[]; options: SpawnOptions }> = []
+  const spawnImpl = ((command: string, args: readonly string[], options: SpawnOptions) => {
+    calls.push({ command, args, options })
+    const child = new EventEmitter() as EventEmitter & { pid: number; stderr: EventEmitter; unref: () => void; kill: () => boolean }
+    child.pid = 42
+    child.stderr = new EventEmitter()
+    child.unref = () => undefined
+    child.kill = () => true
+    process.nextTick(() => {
+      child.emit("spawn")
+      child.emit("close", 0, null)
+    })
+    return child
+  }) as unknown as typeof spawn
+  const opened = await openExternal(folder, [], { platform: "win32", spawn: spawnImpl })
+  expect(opened.method).toBe("folder")
+  expect(calls).toHaveLength(1)
+  expect(calls[0].command).toMatch(/[\\/]cmd\.exe$/)
+  expect(calls[0].args[0]).toBe("/c")
+  expect(calls[0].args[1]).toBe("start")
+  expect(calls[0].args[2]).toBe("")
+  expect(String(calls[0].args[3])).toMatch(/[\\/]explorer\.exe$/)
+  expect(calls[0].args[4]).toBe(folder)
+  expect(calls[0].options.stdio).toBe("ignore")
+})
+
+test("an escaped executable is created by WMI instead of a direct spawn", async () => {
+  const calls: Array<{ command: string; args: readonly string[]; options: SpawnOptions }> = []
+  const spawnImpl = ((command: string, args: readonly string[], options: SpawnOptions) => {
+    calls.push({ command, args, options })
+    const child = new EventEmitter() as EventEmitter & { pid: number; stderr: EventEmitter; unref: () => void; kill: () => boolean }
+    child.pid = 42
+    child.stderr = new EventEmitter()
+    child.unref = () => undefined
+    child.kill = () => true
+    process.nextTick(() => {
+      child.emit("spawn")
+      child.emit("close", 0, null)
+    })
+    return child
+  }) as unknown as typeof spawn
+  const opened = await openExternal(process.execPath, [], { platform: "win32", escapeJob: true, spawn: spawnImpl })
+  expect(opened.method).toBe("wmi")
+  expect(calls[0].command).toMatch(/[\\/]cmd\.exe$/)
+  expect(calls[0].args[0]).toBe("/c")
+  expect(String(calls[0].args[1])).toMatch(/[\\/]powershell\.exe$/)
+  expect(calls[0].args).toContain("-Command")
+  const script = String(calls[0].args[calls[0].args.length - 1])
+  expect(script).toBe(wmiCreateScript(process.execPath, []))
+  expect(script).toContain("Win32_Process")
+  expect(script).toContain(process.execPath)
+  expect(calls[0].options.stdio).toEqual(["ignore", "ignore", "pipe"])
 })
 
 test("windows protocol launch goes through cmd start", async () => {

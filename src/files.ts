@@ -14,6 +14,11 @@ export function fileExists(file: string): Promise<boolean> {
     })
 }
 
+/** Installers, crash handlers, and anti-cheat bootstrappers. Their icons are not the game's icon. */
+export function isHelperExecutable(file: string): boolean {
+  return /unins|crash|redist|setup|anticheat|touchup|cleanup/i.test(path.win32.basename(String(file || "")))
+}
+
 export async function primaryExe(deps: ScanDeps, dir: string): Promise<string> {
   if (!dir) return ""
   let names: string[] = []
@@ -22,7 +27,7 @@ export async function primaryExe(deps: ScanDeps, dir: string): Promise<string> {
   } catch {
     return ""
   }
-  const exes = names.filter(name => name.toLowerCase().endsWith(".exe") && !/unins|crash|redist|setup/i.test(name))
+  const exes = names.filter(name => name.toLowerCase().endsWith(".exe") && !isHelperExecutable(name))
   await deps.report?.("executable_selection", {
     dir,
     candidates: exes,

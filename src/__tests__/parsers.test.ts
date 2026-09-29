@@ -1,12 +1,12 @@
 import path from "path"
 import { battleNetGamesFromAggregate, battleNetGamesFromReg, launchBattleNetGame, parseBattleNetLaunchCode, parseBattleNetSnapshot } from "../launchers/battlenet"
-import { eaGameFromInstallerXml, eaGamesFromReg } from "../launchers/ea"
+import { eaGameFromInstallerXml, eaGamesFromReg, launchEaGame, parseEaSnapshot, resolveEaFilePath } from "../launchers/ea"
 import { epicGameFromManifest } from "../launchers/epic"
 import { gogGamesFromReg } from "../launchers/gog"
 import { itchExecutable } from "../launchers/itch"
 import { gameFromManifest, iconFromUrlShortcut, isRuntimeName, libraryPaths, parseVdf } from "../launchers/steam"
 import { ubisoftGamesFromReg } from "../launchers/ubisoft"
-import { xboxGameFromConfig } from "../launchers/xbox"
+import { xboxGameFromConfig, xboxIconCandidates } from "../launchers/xbox"
 import { matchGames, scoreName } from "../match"
 import { displayIconPath, parseRegSz, parseRegTree } from "../registry"
 import { decodeXmlText } from "../xml"
@@ -95,6 +95,18 @@ test("ea installer xml decodes entities and keeps content ids", () => {
   expect(game?.iconPath).toBe(path.join("D:\\Dragon Age", "Game.exe"))
   const fromReg = eaGamesFromReg([{ key: "HKEY_LOCAL_MACHINE\\SOFTWARE\\Origin Games\\123", values: { DisplayName: "Origin Game", "Install Dir": "D:\\Origin Game" } }])
   expect(fromReg[0].launchUrl).toBe("origin2://game/launch?offerIds=123")
+  const tokenXml =
+    "<touchup><filePath>/__Installer/touchup.exe</filePath></touchup><runtime><launcher><filePath>[HKEY_LOCAL_MACHINE\\SOFTWARE\\EA Games\\SWGoH\\Install Dir]SWGoH.exe</filePath></launcher></runtime><gameTitle>Star Wars: Galaxy of Heroes</gameTitle><contentID>195217</contentID>"
+  const tokenGame = eaGameFromInstallerXml(tokenXml, "D:\\EA\\SWGoH")
+  expect(tokenGame?.iconPath).toBe("[HKEY_LOCAL_MACHINE\\SOFTWARE\\EA Games\\SWGoH\\Install Dir]SWGoH.exe")
+  expect(tokenGame?.launchUrl).toBe("origin2://game/launch?offerIds=195217")
+})
+
+test("ea executable tokens expand to the registry install directory", async () => {
+  const raw = "[HKEY_LOCAL_MACHINE\\SOFTWARE\\EA Games\\SWGoH\\Install Dir]SWGoH.exe"
+  await expect(resolveEaFilePath(raw, "D:\\Wrong", async () => "D:\\EA\\SWGoH\\")).resolves.toBe("D:\\EA\\SWGoH\\SWGoH.exe")
+  await expect(resolveEaFilePath(raw, "D:\\EA\\SWGoH", async () => "")).resolves.toBe("D:\\EA\\SWGoH\\SWGoH.exe")
+  await expect(resolveEaFilePath("[INSTALLDIR]\\Game.exe", "D:\\Dragon Age")).resolves.toBe(path.win32.join("D:\\Dragon Age", "Game.exe"))
 })
 
 test("battle.net maps install ids onto client launch codes", () => {
@@ -156,11 +168,133 @@ test("battle.net waits for the client window before sending the launch command",
   expect(opened).toEqual([["--exec=launch WoW"]])
 })
 
+test("ea launch sends origin2 only after a healthy client can accept it", async () => {
+  const protocol = "origin2://game/launch?offerIds=195217"
+  const launcher = "C:\\Program Files\\Electronic Arts\\EA Desktop\\EA Desktop\\EALauncher.exe"
+  expect(parseEaSnapshot("window 1200")).toEqual({ state: "window", ageMs: 1200 })
+  expect(parseEaSnapshot("running 50\r\n")).toEqual({ state: "running", ageMs: 50 })
+
+  const opened: Array<[string, string[] | undefined]> = []
+  const open = async (target: string, args?: string[]) => {
+    opened.push([target, args])
+  }
+  const ready = await launchEaGame(protocol, launcher, { open, snapshot: async () => ({ state: "window", ageMs: 1000 }) })
+  expect(ready).toEqual({ mode: "ready", sawWindow: true })
+  expect(opened).toEqual([[protocol, []]])
+
+  opened.length = 0
+  const tray = await launchEaGame(protocol, launcher, {
+    open,
+    snapshot: async () => ({ state: "running", ageMs: 20000 }),
+    sleep: async () => undefined,
+    now: () => 0
+  })
+  expect(tray).toEqual({ mode: "ready", sawWindow: false })
+  expect(opened).toEqual([[protocol, []]])
+
+  opened.length = 0
+  const cold: Array<"absent" | "running" | "window"> = ["absent", "running", "window"]
+  let now = 0
+  const started = await launchEaGame(protocol, launcher, {
+    open,
+    snapshot: async () => ({ state: cold.shift() || "window", ageMs: now }),
+    sleep: async ms => {
+      now += ms
+    },
+    now: () => now,
+    pollMs: 500,
+    timeoutMs: 5000
+  })
+  expect(started).toEqual({ mode: "deferred", sawWindow: true })
+  expect(opened).toEqual([
+    [launcher, []],
+    [protocol, []]
+  ])
+
+  opened.length = 0
+  now = 0
+  let polls = 0
+  await expect(
+    launchEaGame(protocol, launcher, {
+      open,
+      snapshot: async () => ({ state: polls++ === 0 ? "absent" : "running", ageMs: now }),
+      sleep: async ms => {
+        now += ms
+      },
+      now: () => now,
+      pollMs: 500,
+      timeoutMs: 1000
+    })
+  ).rejects.toThrow("EA App is still starting")
+  expect(opened).toEqual([[launcher, []]])
+
+  opened.length = 0
+  now = 0
+  await expect(
+    launchEaGame(protocol, launcher, {
+      open,
+      snapshot: async () => ({ state: "absent", ageMs: 0 }),
+      sleep: async ms => {
+        now += ms
+      },
+      now: () => now,
+      pollMs: 500,
+      timeoutMs: 1000
+    })
+  ).rejects.toThrow("EA App did not start")
+  expect(opened).toEqual([[launcher, []]])
+
+  opened.length = 0
+  await expect(launchEaGame(protocol, "", { open, snapshot: async () => ({ state: "absent", ageMs: 0 }) })).rejects.toThrow("EA App is not running")
+  expect(opened).toEqual([])
+
+  opened.length = 0
+  const ages = [1000, 1000, 9000]
+  const aged = await launchEaGame(protocol, launcher, {
+    open,
+    snapshot: async () => ({ state: "running", ageMs: ages.shift() ?? 9000 }),
+    sleep: async () => undefined,
+    now: () => 0,
+    pollMs: 500,
+    timeoutMs: 5000,
+    readyAgeMs: 8000
+  })
+  expect(aged).toEqual({ mode: "deferred", sawWindow: false })
+  expect(opened).toEqual([[protocol, []]])
+
+  opened.length = 0
+  const gone: Array<"absent" | "running" | "window"> = ["running", "absent"]
+  await expect(
+    launchEaGame(protocol, launcher, {
+      open,
+      snapshot: async () => ({ state: gone.shift() || "absent", ageMs: 1000 }),
+      sleep: async () => undefined,
+      now: () => 1000,
+      pollMs: 500,
+      timeoutMs: 1000,
+      readyAgeMs: 8000
+    })
+  ).rejects.toThrow("EA App is still starting")
+  expect(opened).toEqual([])
+})
+
 test("xbox config prefers the registered shell app", () => {
   const xml = `<Identity Name="Microsoft.Game" /><ShellVisuals DefaultDisplayName="Halo" /><Executable Name="game.exe" Id="App" />`
   const game = xboxGameFromConfig(xml, "D:\\Halo", [{ appid: "Microsoft.Game_abc!App", installDir: "D:\\Halo" }])
   expect(game?.launchUrl).toBe("shell:AppsFolder\\Microsoft.Game_abc!App")
   expect(game?.name).toBe("Halo")
+})
+
+test("xbox icon candidates prefer the scaled square logo over the splash image", () => {
+  const xml = `<Executable Name="Minecraft.exe" OverrideSquare44x44Logo="SmallLogoOverride.png" /><ShellVisuals DefaultDisplayName="Minecraft Launcher" Square44x44Logo="Graphics/SmallLogo.png" Square150x150Logo="GraphicsLogo.png" SplashScreenImage="SplashScreen.png" StoreLogo="StoreLogo.png" />`
+  const files = xboxIconCandidates(xml, "D:\\Launcher")
+  const index = (name: string) => files.indexOf(path.win32.join("D:\\Launcher", name))
+  expect(index("SmallLogoOverride.scale-200.png")).toBeGreaterThanOrEqual(0)
+  expect(index("SmallLogoOverride.scale-200.png")).toBeLessThan(index("Graphics\\SmallLogo.scale-200.png"))
+  expect(index("Graphics\\SmallLogo.scale-200.png")).toBeLessThan(index("Graphics\\SmallLogo.png"))
+  expect(index("Graphics\\SmallLogo.png")).toBeLessThan(index("GraphicsLogo.png"))
+  expect(index("GraphicsLogo.png")).toBeLessThan(index("StoreLogo.png"))
+  expect(files.some(file => /SplashScreen/i.test(file))).toBe(false)
 })
 
 test("itch executable comes from the first action path", () => {
@@ -169,6 +303,7 @@ test("itch executable comes from the first action path", () => {
 
 test("registry text and favorites parse loosely", () => {
   expect(parseRegSz("    SteamPath    REG_SZ    C:\\Steam\r\n", "SteamPath")).toBe("C:\\Steam")
+  expect(parseRegSz("HKEY_LOCAL_MACHINE\\SOFTWARE\\EA Games\\SWGoH\r\n    Install Dir    REG_SZ    D:\\EA\\SWGoH\\\r\n", "Install Dir")).toBe("D:\\EA\\SWGoH\\")
   const tree = parseRegTree("HKEY_LOCAL_MACHINE\\SOFTWARE\\Example\\1\r\n    gameName    REG_SZ    Hades\r\n\r\nnot a key\r\n")
   expect(tree).toEqual([{ key: "HKEY_LOCAL_MACHINE\\SOFTWARE\\Example\\1", values: { gameName: "Hades" } }])
   expect(parseFavorites('["steam:570", ""]')).toEqual(["steam:570"])
