@@ -8,6 +8,7 @@ import { errorDetails, errorText } from "./errors"
 import { isGameRecord, normalizeGame, parseFavorites } from "./game"
 import { openExternal, OpenExternalOptions } from "./launch"
 import { createLaunchers } from "./launchers"
+import { launchBattleNetGame, parseBattleNetLaunchCode, readBattleNetClient } from "./launchers/battlenet"
 import { matchGames } from "./match"
 import { dedupePaths } from "./paths"
 import { buildResult, ResultHooks } from "./results"
@@ -222,7 +223,14 @@ export class GamesPlugin implements Plugin {
         pendingLogs.push(pending)
       }
       try {
-        const result = await this.openExternal(game.launchUrl, game.launchArgs, { isLaunch: true, report })
+        const launchCode = game.source === "battlenet" ? parseBattleNetLaunchCode(game.launchArgs || []) : ""
+        const result =
+          launchCode && path.win32.isAbsolute(game.launchUrl)
+            ? await launchBattleNetGame(game.launchUrl, launchCode, {
+                open: (target, args) => this.openExternal(target, args, { isLaunch: true, report }),
+                snapshot: async () => readBattleNetClient()
+              })
+            : await this.openExternal(game.launchUrl, game.launchArgs, { isLaunch: true, report })
         await this.log(ctx, "Info", "launch_dispatched", { ...details, ...(result && typeof result === "object" ? result : {}), gameStartConfirmed: false })
       } finally {
         await Promise.all(pendingLogs)

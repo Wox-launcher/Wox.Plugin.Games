@@ -1,5 +1,5 @@
 import path from "path"
-import { battleNetGamesFromAggregate, battleNetGamesFromReg } from "../launchers/battlenet"
+import { battleNetGamesFromAggregate, battleNetGamesFromReg, launchBattleNetGame, parseBattleNetLaunchCode, parseBattleNetSnapshot } from "../launchers/battlenet"
 import { eaGameFromInstallerXml, eaGamesFromReg } from "../launchers/ea"
 import { epicGameFromManifest } from "../launchers/epic"
 import { gogGamesFromReg } from "../launchers/gog"
@@ -115,6 +115,45 @@ test("battle.net maps install ids onto client launch codes", () => {
   )
   expect(fromReg[0].iconPath).toBe("C:\\Hearthstone\\Hearthstone.exe")
   expect(displayIconPath('"C:\\Hearthstone\\Hearthstone.exe",0')).toBe("C:\\Hearthstone\\Hearthstone.exe")
+  expect(parseBattleNetLaunchCode(["--exec=launch WTCG"])).toBe("WTCG")
+  expect(parseBattleNetSnapshot("window 1200")).toEqual({ state: "window", ageMs: 1200 })
+  expect(parseBattleNetSnapshot("running 50\r\n")).toEqual({ state: "running", ageMs: 50 })
+})
+
+test("battle.net waits for the client window before sending the launch command", async () => {
+  const exe = "C:\\Battle.net\\Battle.net.exe"
+  const opened: Array<string[]> = []
+  const open = async (_target: string, args: string[] = []) => {
+    opened.push(args)
+  }
+  await launchBattleNetGame(exe, "WTCG", { open, snapshot: async () => ({ state: "window", ageMs: 1000 }) })
+  expect(opened).toEqual([["--exec=launch WTCG"]])
+
+  opened.length = 0
+  const cold = ["absent", "running", "window"]
+  let now = 0
+  await launchBattleNetGame(exe, "Fen", {
+    open,
+    snapshot: async () => ({ state: (cold.shift() || "window") as "absent" | "running" | "window", ageMs: now }),
+    sleep: async ms => {
+      now += ms
+    },
+    now: () => now,
+    pollMs: 500,
+    timeoutMs: 5000
+  })
+  expect(opened).toEqual([[], ["--exec=launch Fen"]])
+
+  opened.length = 0
+  await launchBattleNetGame(exe, "WoW", {
+    open,
+    snapshot: async () => ({ state: "running", ageMs: 20000 }),
+    sleep: async () => undefined,
+    now: () => 0,
+    pollMs: 500,
+    timeoutMs: 5000
+  })
+  expect(opened).toEqual([["--exec=launch WoW"]])
 })
 
 test("xbox config prefers the registered shell app", () => {

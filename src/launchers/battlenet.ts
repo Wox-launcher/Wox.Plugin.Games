@@ -1,9 +1,100 @@
+import { spawnSync } from "child_process"
 import path from "path"
 import { errorDetails } from "../errors"
 import { primaryExe } from "../files"
 import { createGame } from "../game"
 import { displayIconPath, parseRegTree, RegEntry } from "../registry"
 import { emptyScan, GameLauncher, InstalledGame, ScanDeps, ScanReport } from "../types"
+
+/** A cold Battle.net process ignores `--exec` until its window exists. A tray client has no window but is already old enough to accept it. */
+export const BATTLENET_READY_AGE_MS = 8000
+export const BATTLENET_READY_TIMEOUT_MS = 45000
+export const BATTLENET_READY_POLL_MS = 500
+
+export type BattleNetClientState = "window" | "running" | "absent"
+
+export interface BattleNetClientSnapshot {
+  state: BattleNetClientState
+  ageMs: number
+}
+
+export interface BattleNetLaunchDeps {
+  open: (target: string, args?: string[]) => Promise<unknown>
+  snapshot: () => Promise<BattleNetClientSnapshot>
+  sleep?: (ms: number) => Promise<void>
+  now?: () => number
+  timeoutMs?: number
+  pollMs?: number
+  readyAgeMs?: number
+}
+
+export function parseBattleNetLaunchCode(args: string[]): string {
+  return /^--exec=launch\s+(\S+)$/i.exec(String(args?.[0] || "").trim())?.[1] || ""
+}
+
+export function parseBattleNetSnapshot(output: string): BattleNetClientSnapshot {
+  const lines = String(output || "")
+    .replace(/\0/g, "")
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const match = /^(window|running|absent)(?:\s+(\d+))?$/i.exec(lines[index])
+    if (!match) continue
+    return { state: match[1].toLowerCase() as BattleNetClientState, ageMs: Number(match[2] || 0) }
+  }
+  return { state: "absent", ageMs: 0 }
+}
+
+/** One sample of the running client. `--exec` is ignored until this reports a window, or a client that was already up. */
+export function readBattleNetClient(): BattleNetClientSnapshot {
+  const script = [
+    "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+    "$procs = @(Get-Process -Name 'Battle.net' -ErrorAction SilentlyContinue)",
+    "if ($procs.Count -eq 0) { 'absent 0'; exit 0 }",
+    "$age = [int]((Get-Date) - @($procs | Sort-Object StartTime)[0].StartTime).TotalMilliseconds",
+    "if (@($procs | Where-Object { $_.MainWindowHandle -ne 0 }).Count -gt 0) { 'window ' + $age; exit 0 }",
+    "'running ' + $age"
+  ].join("; ")
+  const powershell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+  const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 8000 })
+  return parseBattleNetSnapshot(`${result.stdout || ""}\n${result.stderr || ""}`)
+}
+
+/**
+ * Battle.net drops `--exec=launch` when the client is not already running.
+ * Start it, wait until the window is up, then send the launch command.
+ */
+export async function launchBattleNetGame(exe: string, launchCode: string, deps: BattleNetLaunchDeps): Promise<{ mode: "ready" | "deferred"; sawWindow: boolean }> {
+  const execArg = `--exec=launch ${launchCode}`
+  const sleep = deps.sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)))
+  const now = deps.now || Date.now
+  const timeoutMs = deps.timeoutMs ?? BATTLENET_READY_TIMEOUT_MS
+  const pollMs = deps.pollMs ?? BATTLENET_READY_POLL_MS
+  const readyAgeMs = deps.readyAgeMs ?? BATTLENET_READY_AGE_MS
+  const initial = await deps.snapshot()
+  if (initial.state === "window") {
+    await deps.open(exe, [execArg])
+    return { mode: "ready", sawWindow: true }
+  }
+  const alreadyRunning = initial.state === "running"
+  if (!alreadyRunning) await deps.open(exe, [])
+  const deadline = now() + timeoutMs
+  let sawWindow = false
+  const maxPolls = Math.ceil(timeoutMs / pollMs) + 1
+  for (let poll = 0; poll < maxPolls; poll++) {
+    const snap = await deps.snapshot()
+    if (snap.state === "window") {
+      sawWindow = true
+      break
+    }
+    if (alreadyRunning && snap.ageMs >= readyAgeMs) break
+    if (now() >= deadline) break
+    await sleep(pollMs)
+  }
+  await deps.open(exe, [execArg])
+  return { mode: "deferred", sawWindow }
+}
 
 /** Install id, uninstall/client code, display name, and optional launch code when it differs. */
 const BATTLENET_PRODUCTS: ReadonlyArray<readonly [string, string, string, string?]> = [
