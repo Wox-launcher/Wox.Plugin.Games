@@ -292,7 +292,7 @@ export class GamesPlugin implements Plugin {
 
   private async scanAndStore(): Promise<void> {
     try {
-      const found = await scanAll({ ...this.deps, log: (level, event, fields) => this.log(this.ctx, level, event, fields) }, this.launchers)
+      const found = await scanAll({ ...this.deps, cacheDir: this.cacheDir, log: (level, event, fields) => this.log(this.ctx, level, event, fields) }, this.launchers)
       this.scanId = found.scanId
       this.libraryCount = found.watchDirs.length || (found.games.length ? 1 : 0)
       this.replaceGames(found.games)

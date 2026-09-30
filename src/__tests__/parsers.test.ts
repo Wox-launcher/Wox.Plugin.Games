@@ -1,3 +1,4 @@
+import { inflateSync } from "zlib"
 import path from "path"
 import { battleNetGamesFromAggregate, battleNetGamesFromReg, launchBattleNetGame, parseBattleNetLaunchCode, parseBattleNetSnapshot } from "../launchers/battlenet"
 import { eaGameFromInstallerXml, eaGamesFromReg, launchEaGame, parseEaSnapshot, resolveEaFilePath } from "../launchers/ea"
@@ -5,7 +6,8 @@ import { epicGameFromManifest } from "../launchers/epic"
 import { gogGamesFromReg } from "../launchers/gog"
 import { itchExecutable } from "../launchers/itch"
 import { gameFromManifest, iconFromUrlShortcut, isRuntimeName, libraryPaths, parseVdf } from "../launchers/steam"
-import { ubisoftGamesFromReg } from "../launchers/ubisoft"
+import { pngFromIco } from "../ico"
+import { ubisoftGamesFromReg, ubisoftIconsFromConfigurations } from "../launchers/ubisoft"
 import { xboxGameFromConfig, xboxIconCandidates } from "../launchers/xbox"
 import { matchGames, scoreName } from "../match"
 import { displayIconPath, parseRegSz, parseRegTree } from "../registry"
@@ -83,6 +85,122 @@ test("gog and ubisoft registry rows become games", () => {
 
   const ubisoft = ubisoftGamesFromReg([{ key: "HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Launcher\\Installs\\123", values: { InstallDir: "D:\\Games\\Anno\\" } }])
   expect(ubisoft[0]).toMatchObject({ id: "ubisoft:123", name: "Anno", launchUrl: "uplay://launch/123" })
+})
+
+test("ubisoft configuration cache maps each install id to its icon file", () => {
+  const text = [
+    "version: 2.0",
+    "root:",
+    "  name: Growtopia",
+    "  icon_image: cead53fb4a7ffdd39d2a1bafb50dff98.ico",
+    "  start_game:",
+    "    online:",
+    "      executables:",
+    "      - working_directory:",
+    "          register: HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Launcher\\Installs\\924\\InstallDir",
+    "        icon_image: cead53fb4a7ffdd39d2a1bafb50dff98.ico",
+    "version: 2.0",
+    "root:",
+    "  name: Rabbids Coding",
+    "  icon_image: ef546301c29bcc02695bd8be93b0e18a.ico",
+    "        working_directory:",
+    "          register: HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Launcher\\Installs\\5408\\InstallDir",
+    "version: 2.0",
+    "root:",
+    "  name: Owned Only",
+    "version: 2.0",
+    "root:",
+    "  icon_image: aaaaaaaa.png",
+    "  register: HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Launcher\\Installs\\1\\InstallDir",
+    "  register: HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Launcher\\Installs\\2\\InstallDir"
+  ].join("\r\n")
+  expect([...ubisoftIconsFromConfigurations(text)]).toEqual([
+    ["924", "cead53fb4a7ffdd39d2a1bafb50dff98.ico"],
+    ["5408", "ef546301c29bcc02695bd8be93b0e18a.ico"]
+  ])
+})
+
+function dib24(pixels: Array<Array<[number, number, number]>>, transparent: Array<[number, number]>): Buffer {
+  const height = pixels.length
+  const width = pixels[0].length
+  const header = Buffer.alloc(40)
+  header.writeUInt32LE(40, 0)
+  header.writeInt32LE(width, 4)
+  header.writeInt32LE(height * 2, 8)
+  header.writeUInt16LE(1, 12)
+  header.writeUInt16LE(24, 14)
+  const xorStride = Math.floor((width * 24 + 31) / 32) * 4
+  const andStride = Math.floor((width + 31) / 32) * 4
+  const xor = Buffer.alloc(xorStride * height)
+  const mask = Buffer.alloc(andStride * height)
+  for (let y = 0; y < height; y++) {
+    const stored = height - 1 - y
+    for (let x = 0; x < width; x++) {
+      const [r, g, b] = pixels[y][x]
+      const pixel = stored * xorStride + x * 3
+      xor[pixel] = b
+      xor[pixel + 1] = g
+      xor[pixel + 2] = r
+    }
+  }
+  for (const [x, y] of transparent) mask[(height - 1 - y) * andStride + (x >> 3)] |= 0x80 >> (x & 7)
+  return Buffer.concat([header, xor, mask])
+}
+
+function icoFile(image: Buffer, width: number, height: number, bpp: number): Buffer {
+  const header = Buffer.alloc(22)
+  header.writeUInt16LE(1, 2)
+  header.writeUInt16LE(1, 4)
+  header[6] = width >= 256 ? 0 : width
+  header[7] = height >= 256 ? 0 : height
+  header.writeUInt16LE(1, 10)
+  header.writeUInt16LE(bpp, 12)
+  header.writeUInt32LE(image.length, 14)
+  header.writeUInt32LE(22, 18)
+  return Buffer.concat([header, image])
+}
+
+function pngRgba(png: Buffer): { width: number; height: number; rgba: Buffer } {
+  const width = png.readUInt32BE(16)
+  const height = png.readUInt32BE(20)
+  let offset = 8
+  let compressed = Buffer.alloc(0)
+  while (offset + 12 <= png.length) {
+    const length = png.readUInt32BE(offset)
+    const type = png.toString("ascii", offset + 4, offset + 8)
+    if (type === "IDAT") compressed = Buffer.concat([compressed, png.subarray(offset + 8, offset + 8 + length)])
+    offset += 12 + length
+  }
+  const raw = inflateSync(compressed)
+  const rgba = Buffer.alloc(width * height * 4)
+  const stride = width * 4
+  for (let y = 0; y < height; y++) rgba.set(raw.subarray(y * (stride + 1) + 1, y * (stride + 1) + 1 + stride), y * stride)
+  return { width, height, rgba }
+}
+
+test("24-bit ico frames decode to png with the mask applied", () => {
+  const image = dib24(
+    [
+      [
+        [255, 0, 0],
+        [0, 255, 0]
+      ],
+      [
+        [0, 0, 255],
+        [1, 2, 3]
+      ]
+    ],
+    [[1, 1]]
+  )
+  const png = pngFromIco(icoFile(image, 2, 2, 24))
+  if (!png) throw new Error("png")
+  const decoded = pngRgba(png)
+  expect(decoded.width).toBe(2)
+  expect(decoded.height).toBe(2)
+  expect([...decoded.rgba]).toEqual([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 1, 2, 3, 0])
+  const wrapped = icoFile(png, decoded.width, decoded.height, 32)
+  expect(pngFromIco(wrapped)?.equals(png)).toBe(true)
+  expect(pngFromIco(Buffer.from("not an icon"))).toBeNull()
 })
 
 test("ea installer xml decodes entities and keeps content ids", () => {

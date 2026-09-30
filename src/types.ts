@@ -60,6 +60,11 @@ export interface ScanDeps {
   programFilesX86: string
   exists: (file: string, report?: ScanReport) => Promise<boolean>
   readFile: (file: string, report?: ScanReport) => Promise<string>
+  /** Icon files are binary. Text reads replace bytes that are not valid UTF-8. */
+  readBinary?: (file: string, report?: ScanReport) => Promise<Buffer>
+  /** Plugin cache from GetCacheFolder. Launchers write derived icons here. */
+  cacheDir?: string
+  writeBinary?: (file: string, data: Buffer, report?: ScanReport) => Promise<void>
   readdir: (dir: string, report?: ScanReport) => Promise<string[]>
   regQuery: (key: string, valueName: string, report?: ScanReport) => Promise<string>
   regQueryTree: (key: string, report?: ScanReport) => Promise<string>

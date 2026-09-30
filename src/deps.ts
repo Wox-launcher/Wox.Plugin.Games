@@ -1,5 +1,6 @@
 import fs from "fs"
 import os from "os"
+import path from "path"
 import { fileExists } from "./files"
 import { regQuery, regQueryTree } from "./registry"
 import { ScanDeps } from "./types"
@@ -11,6 +12,11 @@ export function createScanDeps(): ScanDeps {
     homedir: os.homedir(),
     exists: file => fileExists(file),
     readFile: file => fs.promises.readFile(file, "utf8"),
+    readBinary: file => fs.promises.readFile(file),
+    writeBinary: async (file, data) => {
+      await fs.promises.mkdir(path.dirname(file), { recursive: true })
+      await fs.promises.writeFile(file, data)
+    },
     readdir: dir => fs.promises.readdir(dir),
     regQuery,
     regQueryTree,

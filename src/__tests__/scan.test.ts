@@ -1,6 +1,8 @@
 import path from "path"
+import { pngFromIco } from "../ico"
 import { EaLauncher } from "../launchers/ea"
 import { SteamLauncher } from "../launchers/steam"
+import { UbisoftLauncher } from "../launchers/ubisoft"
 import { XboxLauncher } from "../launchers/xbox"
 import { scanAll } from "../scan"
 import { createGame } from "../game"
@@ -151,6 +153,74 @@ test("ea scan uses the game executable instead of the anticheat launcher icon", 
   expect(found.games[0].iconPath).toBe(exe)
   expect(found.games[0].iconType).toBe("fileicon")
   expect(found.games[0].launchUrl).toBe("origin2://game/launch?offerIds=1184493")
+})
+
+test("ubisoft scan uses the launcher data icon when the install folder has no executable", async () => {
+  const icon = path.win32.join("C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\data", "cead53fb4a7ffdd39d2a1bafb50dff98.ico")
+  const config = path.win32.join("C:\\Users\\me\\AppData\\Local", "Ubisoft Game Launcher", "cache", "configuration", "configurations")
+  const text = [
+    "version: 2.0",
+    "root:",
+    "  name: Growtopia",
+    "  icon_image: cead53fb4a7ffdd39d2a1bafb50dff98.ico",
+    "        working_directory:",
+    "          register: HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Launcher\\Installs\\924\\InstallDir"
+  ].join("\r\n")
+  const ico = Buffer.alloc(70)
+  ico.writeUInt16LE(1, 2)
+  ico.writeUInt16LE(1, 4)
+  ico[6] = 1
+  ico[7] = 1
+  ico.writeUInt16LE(1, 10)
+  ico.writeUInt16LE(24, 12)
+  ico.writeUInt32LE(48, 14)
+  ico.writeUInt32LE(22, 18)
+  ico.writeUInt32LE(40, 22)
+  ico.writeInt32LE(1, 26)
+  ico.writeInt32LE(2, 30)
+  ico.writeUInt16LE(1, 34)
+  ico.writeUInt16LE(24, 36)
+  ico[64] = 255
+  const png = pngFromIco(ico)
+  if (!png) throw new Error("png")
+  const saved = path.win32.join("C:\\cache", "icons", "cead53fb4a7ffdd39d2a1bafb50dff98.png")
+  const deps = memoryDeps({ [config]: text, [icon]: "ico" }, {}, { "HKLM\\SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher|InstallDir": "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\" })
+  deps.cacheDir = "C:\\cache"
+  deps.readBinary = async () => ico
+  deps.writeBinary = async (file, data) => {
+    expect(file).toBe(saved)
+    expect(data.equals(png)).toBe(true)
+  }
+  deps.regQueryTree = async key =>
+    key.endsWith("\\WOW6432Node\\Ubisoft\\Launcher\\Installs")
+      ? "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher\\Installs\\924\r\n    InstallDir    REG_SZ    C:/Program Files (x86)/Ubisoft/Ubisoft Game Launcher/games/Growtopia/\r\n\r\n"
+      : ""
+  const found = await new UbisoftLauncher().scan(deps)
+  expect(found.games.map(game => game.name)).toEqual(["Growtopia"])
+  expect(found.games[0].iconType).toBe("absolute")
+  expect(found.games[0].iconPath).toBe(saved)
+  expect(found.games[0].launchUrl).toBe("uplay://launch/924")
+})
+
+test("ubisoft scan keeps the game executable when the cached icon is missing", async () => {
+  const install = "D:\\Games\\Anno"
+  const exe = path.win32.join(install, "Anno.exe")
+  const config = path.win32.join("C:\\Users\\me\\AppData\\Local", "Ubisoft Game Launcher", "cache", "configuration", "configurations")
+  const deps = memoryDeps(
+    {
+      [config]: "version: 2.0\r\nicon_image: missing.ico\r\nregister: HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Launcher\\Installs\\123\\InstallDir\r\n",
+      [exe]: "exe"
+    },
+    { [`${install}\\`]: ["Anno.exe", "unins000.exe"] },
+    { "HKLM\\SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher|InstallDir": "C:\\Ubisoft\\Ubisoft Game Launcher\\" }
+  )
+  deps.regQueryTree = async key =>
+    key.endsWith("\\WOW6432Node\\Ubisoft\\Launcher\\Installs")
+      ? "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher\\Installs\\123\r\n    InstallDir    REG_SZ    D:\\Games\\Anno\\\r\n\r\n"
+      : ""
+  const found = await new UbisoftLauncher().scan(deps)
+  expect(found.games[0].iconPath).toBe(exe)
+  expect(found.games[0].iconType).toBe("fileicon")
 })
 
 test("one launcher failure does not drop games from the others", async () => {

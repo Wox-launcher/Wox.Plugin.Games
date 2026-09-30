@@ -37,6 +37,26 @@ export function traceScanDeps(deps: ScanDeps, report: ScanReport): ScanDeps {
         () => deps.readFile(file, report),
         value => ({ bytes: Buffer.byteLength(String(value)) })
       ),
+    readBinary: deps.readBinary
+      ? file =>
+          tracedCall(
+            report,
+            "readBinary",
+            [file],
+            () => deps.readBinary!(file, report),
+            value => ({ bytes: value.length })
+          )
+      : undefined,
+    writeBinary: deps.writeBinary
+      ? (file, data) =>
+          tracedCall(
+            report,
+            "writeBinary",
+            [file],
+            () => deps.writeBinary!(file, data, report),
+            () => ({ bytes: data.length })
+          )
+      : undefined,
     readdir: dir =>
       tracedCall(
         report,
