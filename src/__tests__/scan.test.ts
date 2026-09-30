@@ -1,15 +1,19 @@
 import path from "path"
-import { pngFromIco } from "../ico"
+import { encodePng, pngFromIco } from "../ico"
 import { EaLauncher } from "../launchers/ea"
 import { SteamLauncher } from "../launchers/steam"
 import { UbisoftLauncher } from "../launchers/ubisoft"
 import { XboxLauncher } from "../launchers/xbox"
+import { EpicLauncher } from "../launchers/epic"
+import { GogLauncher } from "../launchers/gog"
+import { BattleNetLauncher } from "../launchers/battlenet"
 import { scanAll } from "../scan"
 import { createGame } from "../game"
 import { GameLauncher, ScanDeps } from "../types"
 
 function memoryDeps(files: Record<string, string>, dirs: Record<string, string[]>, reg: Record<string, string> = {}): ScanDeps {
   const missing = (file: string) => Object.assign(new Error(`ENOENT: ${file}`), { code: "ENOENT", path: file })
+  const binary = new Map<string, Buffer>()
   return {
     platform: "win32",
     homedir: "C:\\Users\\me",
@@ -18,7 +22,18 @@ function memoryDeps(files: Record<string, string>, dirs: Record<string, string[]
     programData: "C:\\ProgramData",
     programFiles: "C:\\Program Files",
     programFilesX86: "C:\\Program Files (x86)",
-    exists: async file => Object.prototype.hasOwnProperty.call(files, file) || Object.prototype.hasOwnProperty.call(dirs, file),
+    exists: async file => binary.has(file) || Object.prototype.hasOwnProperty.call(files, file) || Object.prototype.hasOwnProperty.call(dirs, file),
+    cacheDir: "C:\\cache",
+    fileVersion: async () => "100:1",
+    readBinary: async file => {
+      const data = binary.get(file)
+      if (!data) throw missing(file)
+      return data
+    },
+    writeBinary: async (file, data) => {
+      binary.set(file, data)
+    },
+    extractWindowsIcon: jest.fn(async () => encodePng(1, 1, Buffer.from([255, 0, 0, 255]))),
     readFile: async file => {
       if (!Object.prototype.hasOwnProperty.call(files, file)) throw missing(file)
       return files[file]
@@ -104,8 +119,9 @@ test("ea scan uses the manifest registry token when several executables are pres
       : ""
   const found = await new EaLauncher().scan(deps)
   expect(found.games.map(game => game.name)).toEqual(["Star Wars: Galaxy of Heroes"])
-  expect(found.games[0].iconPath).toBe(exe)
-  expect(found.games[0].iconType).toBe("fileicon")
+  expect(deps.extractWindowsIcon).toHaveBeenCalledWith(exe)
+  expect(found.games[0].iconPath).toMatch(/\\icons\\[a-f0-9]{64}\.png$/)
+  expect(found.games[0].iconType).toBe("absolute")
   expect(found.games[0].launchUrl).toBe("origin2://game/launch?offerIds=195217")
 })
 
@@ -127,8 +143,9 @@ test("ea scan keeps an uninstall display icon when the manifest executable is mi
   }
   const found = await new EaLauncher().scan(deps)
   expect(found.games).toHaveLength(1)
-  expect(found.games[0].iconPath).toBe(exe)
-  expect(found.games[0].iconType).toBe("fileicon")
+  expect(deps.extractWindowsIcon).toHaveBeenCalledWith(exe)
+  expect(found.games[0].iconPath).toMatch(/\\icons\\[a-f0-9]{64}\.png$/)
+  expect(found.games[0].iconType).toBe("absolute")
   expect(found.games[0].launchUrl).toBe("origin2://game/launch?offerIds=9")
 })
 
@@ -150,8 +167,10 @@ test("ea scan uses the game executable instead of the anticheat launcher icon", 
       : ""
   const found = await new EaLauncher().scan(deps)
   expect(found.games.map(game => game.name)).toEqual(["skate."])
-  expect(found.games[0].iconPath).toBe(exe)
-  expect(found.games[0].iconType).toBe("fileicon")
+  expect(deps.extractWindowsIcon).toHaveBeenCalledWith(exe)
+  expect(deps.extractWindowsIcon).not.toHaveBeenCalledWith(anticheat)
+  expect(found.games[0].iconPath).toMatch(/\\icons\\[a-f0-9]{64}\.png$/)
+  expect(found.games[0].iconType).toBe("absolute")
   expect(found.games[0].launchUrl).toBe("origin2://game/launch?offerIds=1184493")
 })
 
@@ -183,12 +202,13 @@ test("ubisoft scan uses the launcher data icon when the install folder has no ex
   ico[64] = 255
   const png = pngFromIco(ico)
   if (!png) throw new Error("png")
-  const saved = path.win32.join("C:\\cache", "icons", "cead53fb4a7ffdd39d2a1bafb50dff98.png")
+  let saved = ""
   const deps = memoryDeps({ [config]: text, [icon]: "ico" }, {}, { "HKLM\\SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher|InstallDir": "C:\\Program Files (x86)\\Ubisoft\\Ubisoft Game Launcher\\" })
   deps.cacheDir = "C:\\cache"
   deps.readBinary = async () => ico
   deps.writeBinary = async (file, data) => {
-    expect(file).toBe(saved)
+    saved = file
+    expect(file).toMatch(/\\icons\\[a-f0-9]{64}\.png$/)
     expect(data.equals(png)).toBe(true)
   }
   deps.regQueryTree = async key =>
@@ -199,6 +219,7 @@ test("ubisoft scan uses the launcher data icon when the install folder has no ex
   expect(found.games.map(game => game.name)).toEqual(["Growtopia"])
   expect(found.games[0].iconType).toBe("absolute")
   expect(found.games[0].iconPath).toBe(saved)
+  expect(deps.extractWindowsIcon).not.toHaveBeenCalled()
   expect(found.games[0].launchUrl).toBe("uplay://launch/924")
 })
 
@@ -219,8 +240,92 @@ test("ubisoft scan keeps the game executable when the cached icon is missing", a
       ? "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher\\Installs\\123\r\n    InstallDir    REG_SZ    D:\\Games\\Anno\\\r\n\r\n"
       : ""
   const found = await new UbisoftLauncher().scan(deps)
-  expect(found.games[0].iconPath).toBe(exe)
-  expect(found.games[0].iconType).toBe("fileicon")
+  expect(deps.extractWindowsIcon).toHaveBeenCalledWith(exe)
+  expect(found.games[0].iconPath).toMatch(/\\icons\\[a-f0-9]{64}\.png$/)
+  expect(found.games[0].iconType).toBe("absolute")
+})
+
+test("Ubisoft matches a legacy GameUpdate registry reference to the installed directory", async () => {
+  const config = "C:\\Users\\me\\AppData\\Local\\Ubisoft Game Launcher\\cache\\configuration\\configurations"
+  const install = "C:/Games/Assassin's Creed II/"
+  const icon = "C:\\Ubisoft\\data\\ac2.png"
+  const deps = memoryDeps(
+    {
+      [config]: `version: 2.0\nroot:\n  name: Localized title\n  icon_image: ac2.png\n  start_game:\n    online:\n      executables:\n        - path:\n            relative: AssassinsCreedIIGame.exe\n          working_directory:\n            register: HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Assassin's Creed II\\GameUpdate\\installdir\n`,
+      [icon]: "png"
+    },
+    { [install]: ["AssassinsCreedII.exe", "AssassinsCreedIIGame.exe", "UPlayBrowser.exe"] },
+    {
+      "HKLM\\SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher|InstallDir": "C:\\Ubisoft"
+    }
+  )
+  deps.regQueryTree = async key => {
+    if (key.endsWith("\\Launcher\\Installs")) return `HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Ubisoft\\Launcher\\Installs\\4\r\n    InstallDir    REG_SZ    ${install}\r\n\r\n`
+    if (key === "HKLM\\SOFTWARE\\WOW6432Node\\Ubisoft")
+      return `HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Ubisoft\\Assassin's Creed II\\GameUpdate\r\n    installdir    REG_SZ    c:\\Games\\Assassin's Creed II\r\n\r\n`
+    return ""
+  }
+  const found = await new UbisoftLauncher().scan(deps)
+  expect(found.games).toHaveLength(1)
+  expect(found.games[0].iconPath).toBe(icon)
+  expect(found.games[0].iconType).toBe("absolute")
+  expect(found.games[0].launchUrl).toBe("uplay://launch/4")
+})
+
+test("epic keeps games and launch URLs when Windows extraction fails", async () => {
+  const dir = path.win32.join("C:\\ProgramData", "Epic", "EpicGamesLauncher", "Data", "Manifests")
+  const exe = "D:\\Epic\\Game\\Game.exe"
+  const deps = memoryDeps(
+    {
+      [path.win32.join(dir, "game.item")]: JSON.stringify({
+        DisplayName: "Game",
+        AppName: "game",
+        CatalogNamespace: "ns",
+        CatalogItemId: "item",
+        InstallLocation: "D:\\Epic\\Game",
+        LaunchExecutable: "Game.exe"
+      }),
+      [exe]: "exe"
+    },
+    { [dir]: ["game.item"] }
+  )
+  deps.extractWindowsIcon = jest.fn(async () => {
+    throw new Error("unsupported resource")
+  })
+  const found = await new EpicLauncher().scan(deps)
+  expect(found.games).toHaveLength(1)
+  expect(found.games[0].launchUrl).toBe("com.epicgames.launcher://apps/ns%3Aitem%3Agame?action=launch&silent=true")
+  expect(found.games[0].iconPath).toBe("")
+  expect(found.games[0].iconType).toBe("")
+})
+
+test("GOG materializes icons without changing the executable launch target", async () => {
+  const exe = "D:\\GOG\\Game\\Game.exe"
+  const deps = memoryDeps({ [exe]: "exe" }, {})
+  deps.regQueryTree = async () => `HKEY_LOCAL_MACHINE\\SOFTWARE\\GOG.com\\Games\\123\r\n    gameName    REG_SZ    Game\r\n    path    REG_SZ    D:\\GOG\\Game\r\n    exe    REG_SZ    Game.exe\r\n\r\n`
+  const found = await new GogLauncher().scan(deps)
+  expect(found.games).toHaveLength(1)
+  expect(found.games[0].launchUrl).toBe(exe)
+  expect(found.games[0].iconType).toBe("absolute")
+  expect(found.games[0].iconPath).not.toBe(exe)
+  expect(deps.extractWindowsIcon).toHaveBeenCalledTimes(1)
+})
+
+test.each(["aggregate", "registry"])("Battle.net converts %s icons and keeps launch arguments", async source => {
+  const client = "C:\\Program Files (x86)\\Battle.net\\Battle.net.exe"
+  const icon = "D:\\Blizzard\\Diablo\\Diablo.exe"
+  const catalog = "C:\\ProgramData\\Battle.net\\Agent\\aggregate.json"
+  const files: Record<string, string> = { [client]: "exe", [icon]: "exe" }
+  if (source === "aggregate") files[catalog] = JSON.stringify({ installed: [{ name: "Diablo III", product_id: "d3", icon_path: icon }] })
+  const deps = memoryDeps(files, {})
+  deps.regQueryTree = async () =>
+    `HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Diablo\r\n    DisplayName    REG_SZ    Diablo III\r\n    UninstallString    REG_SZ    Battle.net.exe --uid=d3\r\n    InstallLocation    REG_SZ    D:\\Blizzard\\Diablo\r\n    DisplayIcon    REG_SZ    "${icon}",0\r\n\r\n`
+  const found = await new BattleNetLauncher().scan(deps)
+  expect(found.games).toHaveLength(1)
+  expect(found.games[0].launchUrl).toBe(client)
+  expect(found.games[0].launchArgs).toEqual(["--exec=launch D3"])
+  expect(found.games[0].iconType).toBe("absolute")
+  expect(deps.extractWindowsIcon).toHaveBeenCalledWith(icon)
 })
 
 test("one launcher failure does not drop games from the others", async () => {

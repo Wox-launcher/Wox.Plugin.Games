@@ -1,7 +1,7 @@
 import { spawnSync } from "child_process"
 import path from "path"
 import { errorDetails } from "../errors"
-import { primaryExe } from "../files"
+import { applyGameIcon, primaryExe } from "../files"
 import { createGame } from "../game"
 import { displayIconPath, parseRegTree, RegEntry } from "../registry"
 import { emptyScan, GameLauncher, InstalledGame, ScanDeps, ScanReport } from "../types"
@@ -226,10 +226,7 @@ export class BattleNetLauncher implements GameLauncher {
       const games = battleNetGamesFromAggregate(JSON.parse(await deps.readFile(catalog)) as BattleNetAggregate, clientExe, deps.report)
       for (const game of games) {
         game.discoveryPath = catalog
-        if (game.iconPath && !(await deps.exists(game.iconPath))) {
-          game.iconPath = ""
-          game.iconType = ""
-        }
+        await applyGameIcon(deps, game)
       }
       if (games.length) return { games, watchDirs: [path.dirname(catalog)] }
     } catch (err) {
@@ -254,6 +251,7 @@ export class BattleNetLauncher implements GameLauncher {
           game.iconType = game.iconPath ? "fileicon" : ""
         }
         seen.add(game.id)
+        await applyGameIcon(deps, game)
         games.push(game)
       }
     }

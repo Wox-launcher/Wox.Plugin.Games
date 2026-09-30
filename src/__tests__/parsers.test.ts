@@ -120,6 +120,21 @@ test("ubisoft configuration cache maps each install id to its icon file", () => 
   ])
 })
 
+test.each([`"Assassin's Creed II.ico"`, "'Assassin''s Creed II.ico'", "Assassin's Creed II.ico"])("Ubisoft accepts spaces and apostrophes in %s", file => {
+  const text = `version: 2.0\n  icon_image: ${file}\n  register: HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Launcher\\Installs\\4\\InstallDir\n`
+  expect(ubisoftIconsFromConfigurations(text).get("4")).toBe("Assassin's Creed II.ico")
+})
+
+test("Ubisoft refuses to associate a legacy configuration with multiple installations", () => {
+  const text =
+    "version: 2.0\nicon_image: wrong.ico\nregister: HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\One\\GameUpdate\\installdir\nregister: HKEY_LOCAL_MACHINE\\SOFTWARE\\Ubisoft\\Two\\GameUpdate\\installdir\n"
+  const legacyIds = new Map([
+    ["hkey_local_machine\\software\\ubisoft\\one\\gameupdate\\installdir", "1"],
+    ["hkey_local_machine\\software\\ubisoft\\two\\gameupdate\\installdir", "2"]
+  ])
+  expect(ubisoftIconsFromConfigurations(text, legacyIds).size).toBe(0)
+})
+
 function dib24(pixels: Array<Array<[number, number, number]>>, transparent: Array<[number, number]>): Buffer {
   const height = pixels.length
   const width = pixels[0].length

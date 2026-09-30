@@ -1,4 +1,5 @@
 import path from "path"
+import { applyGameIcon } from "../files"
 import { createGame } from "../game"
 import { leafKey, parseRegTree, RegEntry } from "../registry"
 import { emptyScan, GameLauncher, InstalledGame, ScanDeps, ScanReport } from "../types"
@@ -50,6 +51,7 @@ export class GogLauncher implements GameLauncher {
           continue
         }
         seen.add(game.id)
+        await applyGameIcon(deps, game)
         games.push(game)
       }
     }
