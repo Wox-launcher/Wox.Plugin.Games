@@ -199,20 +199,25 @@ function preferLogo(paths: string[]): string {
   )
 }
 
-/** Prefers the library logo. Newer Steam clients store a localized logo such as logo_schinese.png inside a hash directory instead of logo.png. */
+/** Prefer small game icons over wide library logos, supporting both Steam cache layouts. */
 export async function pickIcon(steamRoot: string, appid: string, deps: ScanDeps): Promise<string> {
   const id = String(appid)
   const cacheDir = path.join(steamRoot, "appcache", "librarycache", id)
-  const direct = [path.join(cacheDir, "logo.png"), path.join(steamRoot, "appcache", "librarycache", `${id}_icon.jpg`)]
-  for (const candidate of direct) {
-    if (await deps.exists(candidate)) return candidate
-  }
+  const legacyIcon = path.join(steamRoot, "appcache", "librarycache", `${id}_icon.jpg`)
+  if (await deps.exists(legacyIcon)) return legacyIcon
   let entries: string[] = []
   try {
     entries = await deps.readdir(cacheDir)
   } catch {
-    return ""
+    // A known logo can remain readable when directory enumeration is unavailable.
   }
+  // Current Steam caches name game icons by their SHA-1; other JPGs are banners or covers.
+  for (const entry of entries.filter(name => /^[a-f0-9]{40}\.jpg$/i.test(name)).sort()) {
+    const icon = path.join(cacheDir, entry)
+    if (await deps.exists(icon)) return icon
+  }
+  const logo = path.join(cacheDir, "logo.png")
+  if (await deps.exists(logo)) return logo
   const logos: string[] = []
   for (const entry of entries) {
     if (/^logo.*\.png$/i.test(entry)) logos.push(path.join(cacheDir, entry))
