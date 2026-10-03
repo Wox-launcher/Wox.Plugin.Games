@@ -65,6 +65,9 @@ export interface ScanDeps {
   /** Plugin cache from GetCacheFolder. Launchers write derived icons here. */
   cacheDir?: string
   writeBinary?: (file: string, data: Buffer, report?: ScanReport) => Promise<void>
+  /** Size and modification time used to invalidate derived icon files. */
+  fileVersion?: (file: string) => Promise<string>
+  extractWindowsIcon?: (file: string) => Promise<Buffer>
   readdir: (dir: string, report?: ScanReport) => Promise<string[]>
   regQuery: (key: string, valueName: string, report?: ScanReport) => Promise<string>
   regQueryTree: (key: string, report?: ScanReport) => Promise<string>

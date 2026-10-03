@@ -2,7 +2,7 @@ import { spawnSync } from "child_process"
 import fs from "fs"
 import path from "path"
 import { errorDetails } from "../errors"
-import { isHelperExecutable, primaryExe } from "../files"
+import { applyGameIcon, isHelperExecutable, primaryExe } from "../files"
 import { createGame } from "../game"
 import { dedupePaths } from "../paths"
 import { displayIconPath, leafKey, parseRegTree, RegEntry } from "../registry"
@@ -352,6 +352,10 @@ export class EaLauncher implements GameLauncher {
       }
       watchDirs.push(root)
       for (const name of names) await addDirectory(path.join(root, name))
+    }
+    // Materialize after merging all registry rows so icon selection still compares source executables.
+    for (const game of games.values()) {
+      await applyGameIcon(deps, game)
     }
     return { games: [...games.values()], watchDirs }
   }

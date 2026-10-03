@@ -1,5 +1,6 @@
 import path from "path"
 import { errorDetails } from "../errors"
+import { applyGameIcon } from "../files"
 import { createGame } from "../game"
 import { emptyScan, GameLauncher, InstalledGame, ScanDeps, ScanReport } from "../types"
 
@@ -66,10 +67,7 @@ export class EpicLauncher implements GameLauncher {
         const game = epicGameFromManifest(JSON.parse(await deps.readFile(manifestPath)) as EpicManifest, (event, fields, level) => deps.report?.(event, { manifestPath, ...fields }, level))
         if (!game) continue
         game.discoveryPath = manifestPath
-        if (game.iconPath && !(await deps.exists(game.iconPath))) {
-          game.iconPath = ""
-          game.iconType = ""
-        }
+        await applyGameIcon(deps, game)
         games.push(game)
       } catch (err) {
         void deps.report?.("manifest_failed", { manifestPath, ...errorDetails(err) }, "Warning")

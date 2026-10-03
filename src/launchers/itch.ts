@@ -1,5 +1,6 @@
 import path from "path"
 import { errorDetails } from "../errors"
+import { applyGameIcon } from "../files"
 import { createGame } from "../game"
 import { emptyScan, GameLauncher, InstalledGame, ScanDeps } from "../types"
 
@@ -70,7 +71,10 @@ export class ItchLauncher implements GameLauncher {
         launchUrl: `itch://caves/${caveId}/launch`,
         iconPath
       })
-      if (game) games.push(game)
+      if (game) {
+        await applyGameIcon(deps, game)
+        games.push(game)
+      }
     }
     return { games, watchDirs: [path.dirname(dbPath)] }
   }
