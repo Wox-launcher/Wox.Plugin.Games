@@ -7,7 +7,7 @@ import { XboxLauncher } from "../launchers/xbox"
 import { EpicLauncher } from "../launchers/epic"
 import { GogLauncher } from "../launchers/gog"
 import { BattleNetLauncher } from "../launchers/battlenet"
-import { scanAll } from "../scan"
+import { scanAll, traceScanDeps } from "../scan"
 import { createGame } from "../game"
 import { GameLauncher, ScanDeps } from "../types"
 
@@ -71,20 +71,36 @@ test("steam launcher reads manifests from libraryfolders.vdf", async () => {
 })
 
 const iconHash = "a".repeat(40)
-test.each([
+test.each<[string, string[], string[] | null, string]>([
   ["legacy icon", ["../1_icon.jpg", `${iconHash}.jpg`, "logo.png"], [`${iconHash}.jpg`, "logo.png"], "../1_icon.jpg"],
   ["current icon", [`${iconHash}.JPG`, "logo.png"], ["header.jpg", `${iconHash}.JPG`, "logo.png"], `${iconHash}.JPG`],
   ["remaining icon after a cache change", [`${"b".repeat(40)}.jpg`, "logo.png"], [`${"b".repeat(40)}.jpg`, `${iconHash}.jpg`], `${"b".repeat(40)}.jpg`],
+  ["logo after all game icons disappear", ["logo.png"], [`${iconHash}.jpg`, "logo.png"], "logo.png"],
   ["direct logo with unreadable directory", ["logo.png"], null, "logo.png"],
   ["localized nested logo", ["hash/logo_schinese.png"], ["header.jpg", "hash"], "hash/logo_schinese.png"],
   ["no artwork", [], [], ""]
 ])("Steam chooses %s and preserves logo fallbacks", async (_label, files, entries, expected) => {
   const cache = path.win32.join("C:\\Steam", "appcache", "librarycache", "1")
   const deps = memoryDeps(
-    Object.fromEntries((files as string[]).map(file => [path.win32.join(cache, file), "image"])),
-    entries === null ? {} : { [cache]: entries as string[], [path.win32.join(cache, "hash")]: ["logo_schinese.png"] }
+    Object.fromEntries(files.map(file => [path.win32.join(cache, file), "image"])),
+    entries === null ? {} : { [cache]: entries, [path.win32.join(cache, "hash")]: ["logo_schinese.png"] }
   )
-  expect(await pickIcon("C:\\Steam", "1", deps)).toBe(expected ? path.win32.join(cache, expected as string) : "")
+  expect(await pickIcon("C:\\Steam", "1", deps)).toBe(expected ? path.win32.join(cache, expected) : "")
+})
+
+test("Steam falls back to its logo and reports an inaccessible game icon", async () => {
+  const cache = path.win32.join("C:\\Steam", "appcache", "librarycache", "1")
+  const icon = path.win32.join(cache, `${iconHash}.jpg`)
+  const logo = path.win32.join(cache, "logo.png")
+  const deps = memoryDeps({ [logo]: "png" }, { [cache]: [`${iconHash}.jpg`, "logo.png"] })
+  const exists = deps.exists
+  deps.exists = async file => {
+    if (file === icon) throw Object.assign(new Error("Access denied"), { code: "EACCES", path: file })
+    return exists(file)
+  }
+  const report = jest.fn()
+  expect(await pickIcon("C:\\Steam", "1", traceScanDeps(deps, report))).toBe(logo)
+  expect(report).toHaveBeenCalledWith("scan_io_failed", expect.objectContaining({ operation: "exists", errorCode: "EACCES", path: icon }), "Warning")
 })
 
 test("Steam ignores unrelated JPG artwork when no game icon is cached", async () => {
